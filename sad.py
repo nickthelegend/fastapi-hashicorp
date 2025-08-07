@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from algosdk import account, mnemonic
 import requests
 import os
-from algosdk.transaction import AssetConfigTxn, AssetCreateTxn , PaymentTxn , AssetTransferTxn
+from algosdk.transaction import AssetConfigTxn, AssetCreateTxn , PaymentTxn , AssetTransferTxn , AssetOptInTxn, AssetCloseOutTxn
 from algosdk.v2client import algod
 from dotenv import load_dotenv
 import logging
@@ -43,6 +43,16 @@ class AssetTransferRequest(BaseModel):
     amount: int
     close_to: str | None = None
     revocation_target: str | None = None
+
+class OptInRequest(BaseModel):
+    key: str
+    asset_id: int
+
+class AssetOptOutRequest(BaseModel):
+    key: str
+    asset_id: int
+    receiver: str  # recipient of remaining assets (usually reserve or clawback)
+    note: bytes | None = None
 
 app = FastAPI()
 
@@ -212,3 +222,70 @@ def asset_transfer(req: AssetTransferRequest):
     }
     return jsonable_encoder(data, custom_encoder={bytes: lambda v: base64.b64encode(v).decode("utf-8")})
 
+@app.post("/opt-in-asset/")
+def opt_in_asset(req: OptInRequest):
+    # 1. Fetch mnemonic from Vault
+    vault_url = f"{VAULT_ADDR}/v1/cubbyhole/{req.key}"
+    resp = requests.get(vault_url, headers={"X-Vault-Token": VAULT_TOKEN})
+    if resp.status_code != 200:
+        raise HTTPException(status_code=404, detail="Mnemonic not found in Vault.")
+    mnem = resp.json().get("data", {}).get("mnemonic")
+    if not mnem:
+        raise HTTPException(status_code=500, detail="Invalid mnemonic data.")
+
+    # 2. Derive Algorand account
+    private_key = mnemonic.to_private_key(mnem)
+    sender_addr = account.address_from_private_key(private_key)
+
+    # 3. Build AssetOptInTxn (opt-in = asset opt-in)
+    sp = algod_client.suggested_params()
+    txn = AssetOptInTxn(sender=sender_addr, sp=sp, index=req.asset_id)
+
+    # 4. Sign transaction
+    signed_txn = txn.sign(private_key)
+
+    # 5. Construct safe JSON response
+    data = {
+        "sig": signed_txn.signature,                   # raw bytes
+        "txn": signed_txn.transaction.dictify()        # JSON-ready dict
+    }
+    return jsonable_encoder(data, custom_encoder={
+        bytes: lambda v: base64.b64encode(v).decode("utf-8")
+    })
+
+@app.post("/asset-opt-out/")
+def asset_opt_out(req: AssetOptOutRequest):
+    # 1. Fetch mnemonic from Vault
+    vault_url = f"{VAULT_ADDR}/v1/cubbyhole/{req.key}"
+    resp = requests.get(vault_url, headers={"X-Vault-Token": VAULT_TOKEN})
+    if resp.status_code != 200:
+        raise HTTPException(status_code=404, detail="Mnemonic not found in Vault.")
+    mnem = resp.json().get("data", {}).get("mnemonic")
+    if not mnem:
+        raise HTTPException(status_code=500, detail="Invalid mnemonic data.")
+
+    # 2. Derive Algorand keys
+    private_key = mnemonic.to_private_key(mnem)
+    sender_addr = account.address_from_private_key(private_key)
+
+    # 3. Build AssetCloseOutTxn
+    sp = algod_client.suggested_params()
+    txn = AssetCloseOutTxn(
+        sender=sender_addr,
+        sp=sp,
+        receiver=req.receiver,
+        index=req.asset_id,
+        note=req.note
+    )
+
+    # 4. Sign transaction
+    signed_txn = txn.sign(private_key)
+
+    # 5. Return safe JSON response with Base64 for bytes
+    data = {
+        "sig": signed_txn.signature,
+        "txn": signed_txn.transaction.dictify()
+    }
+    return jsonable_encoder(data, custom_encoder={
+        bytes: lambda v: base64.b64encode(v).decode("utf-8")
+    })
