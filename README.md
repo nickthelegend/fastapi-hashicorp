@@ -34,3 +34,9 @@ curl -X POST http://127.0.0.1:8000/opt-in-asset/ -H "Content-Type: application/j
 ```bash
 curl -X POST http://127.0.0.1:8000/asset-opt-out/ -H "Content-Type: application/json" -d "{\"key\":\"sad\",\"asset_id\":1234,\"receiver\":\"LEGENDMQQJJWSQVHRFK36EP7GTM3MTI3VD3GN25YMKJ6MEBR35J4SBNVD4\"}"
 ```
+
+
+### App Call /call-app/
+```bash
+curl -X POST http://127.0.0.1:8000/call-app/ -H "Content-Type: application/json" -d "{\"key\":\"sad\",\"app_id\":123,\"on_complete\":\"NoOp\",\"app_args\":[\"arg1\",\"arg2\"],\"accounts\":[\"LEGENDMQQJJWSQVHRFK36EP7GTM3MTI3VD3GN25YMKJ6MEBR35J4SBNVD4\"],\"foreign_assets\":[111,222],\"note\":\"Hello\"}"
+```
