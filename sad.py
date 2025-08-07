@@ -11,6 +11,8 @@ import base64
 import msgpack
 from fastapi.encoders import jsonable_encoder
 from algosdk.v2client.algod import AlgodClient
+from typing import List, Optional
+from algosdk.transaction import ApplicationCallTxn, OnComplete
 
 logging.basicConfig(
     level=logging.DEBUG,  # or logging.INFO to reduce verbosity
@@ -53,6 +55,18 @@ class AssetOptOutRequest(BaseModel):
     asset_id: int
     receiver: str  # recipient of remaining assets (usually reserve or clawback)
     note: bytes | None = None
+
+class AppCallRequest(BaseModel):
+    key: str
+    app_id: int
+    on_complete: str  # e.g., "NoOp", "OptIn", "CloseOut"
+    app_args: Optional[List[str]] = None
+    accounts: Optional[List[str]] = None
+    foreign_apps: Optional[List[int]] = None
+    foreign_assets: Optional[List[int]] = None
+    note: Optional[str] = None  # Base64 or utf-8
+    lease: Optional[str] = None
+    rekey_to: Optional[str] = None
 
 app = FastAPI()
 
@@ -289,3 +303,45 @@ def asset_opt_out(req: AssetOptOutRequest):
     return jsonable_encoder(data, custom_encoder={
         bytes: lambda v: base64.b64encode(v).decode("utf-8")
     })
+
+
+@app.post("/call-app/")
+def call_app(req: AppCallRequest):
+    vault_url = f"{VAULT_ADDR}/v1/cubbyhole/{req.key}"
+    resp = requests.get(vault_url, headers={"X-Vault-Token": VAULT_TOKEN})
+    if resp.status_code != 200:
+        raise HTTPException(status_code=404, detail="Mnemonic not found in Vault.")
+    mnem = resp.json().get("data", {}).get("mnemonic")
+    if not mnem:
+        raise HTTPException(status_code=500, detail="Invalid mnemonic data.")
+
+    private_key = mnemonic.to_private_key(mnem)
+    sender_addr = account.address_from_private_key(private_key)
+
+    sp = algod_client.suggested_params()
+    # Use valid enum or default to NoOpOC
+    on_complete_enum = getattr(OnComplete, f"{req.on_complete}OC", OnComplete.NoOpOC) if req.on_complete else OnComplete.NoOpOC
+
+    def str_list_to_bytes(lst):
+        return [s.encode("utf-8") for s in lst] if lst else None
+
+    txn = ApplicationCallTxn(
+        sender=sender_addr,
+        sp=sp,
+        index=req.app_id,
+        on_complete=on_complete_enum,
+        app_args=str_list_to_bytes(req.app_args),
+        accounts=req.accounts,
+        foreign_apps=req.foreign_apps,
+        foreign_assets=req.foreign_assets,
+        note=req.note.encode("utf-8") if req.note else None,
+        lease=base64.b64decode(req.lease) if req.lease else None,
+        rekey_to=req.rekey_to
+    )
+
+    signed_txn = txn.sign(private_key)
+    resp_data = {
+        "sig": signed_txn.signature,
+        "txn": signed_txn.transaction.dictify()
+    }
+    return jsonable_encoder(resp_data, custom_encoder={bytes: lambda v: base64.b64encode(v).decode("utf-8")})
