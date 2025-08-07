@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from algosdk import account, mnemonic
 import requests
 import os
-from algosdk.transaction import AssetConfigTxn, AssetCreateTxn , PaymentTxn
+from algosdk.transaction import AssetConfigTxn, AssetCreateTxn , PaymentTxn , AssetTransferTxn
 from algosdk.v2client import algod
 from dotenv import load_dotenv
 import logging
@@ -35,6 +35,14 @@ class PaymentRequest(BaseModel):
     key: str
     receiver: str
     amount: int
+
+class AssetTransferRequest(BaseModel):
+    key: str
+    receiver: str
+    asset_id: int
+    amount: int
+    close_to: str | None = None
+    revocation_target: str | None = None
 
 app = FastAPI()
 
@@ -166,3 +174,41 @@ def payment_txn(req: PaymentRequest):
         "txn": signed_txn.transaction.dictify()     # JSON-ready dict
     }
     return jsonable_encoder(data, custom_encoder={bytes: lambda v: base64.b64encode(v).decode("utf-8")})
+
+@app.post("/asset-transfer/")
+def asset_transfer(req: AssetTransferRequest):
+    # 1. Retrieve mnemonic from Vault
+    vault_url = f"{VAULT_ADDR}/v1/cubbyhole/{req.key}"
+    resp = requests.get(vault_url, headers={"X-Vault-Token": VAULT_TOKEN})
+    if resp.status_code != 200:
+        raise HTTPException(status_code=404, detail="Mnemonic not found in Vault.")
+    mnem = resp.json().get("data", {}).get("mnemonic")
+    if not mnem:
+        raise HTTPException(status_code=500, detail="Invalid mnemonic data.")
+
+    # 2. Derive keys
+    private_key = mnemonic.to_private_key(mnem)
+    sender_addr = account.address_from_private_key(private_key)
+
+    # 3. Build AssetTransferTxn
+    sp = algod_client.suggested_params()
+    txn = AssetTransferTxn(
+        sender=sender_addr,
+        sp=sp,
+        receiver=req.receiver,
+        amt=req.amount,
+        index=req.asset_id,
+        close_assets_to=req.close_to,
+        revocation_target=req.revocation_target
+    )
+
+    # 4. Sign transaction
+    signed_txn = txn.sign(private_key)
+
+    # 5. Prepare JSON response handling bytes
+    data = {
+        "sig": signed_txn.signature,
+        "txn": signed_txn.transaction.dictify()
+    }
+    return jsonable_encoder(data, custom_encoder={bytes: lambda v: base64.b64encode(v).decode("utf-8")})
+
