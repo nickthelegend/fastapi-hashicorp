@@ -3,14 +3,33 @@ from pydantic import BaseModel
 from algosdk import account, mnemonic
 import requests
 import os
+from algosdk.transaction import AssetConfigTxn, AssetCreateTxn
+from algosdk.v2client import algod
+from dotenv import load_dotenv
+load_dotenv()  # Loads .env file into environment
 
 class CreateRequest(BaseModel):
     key: str
 
+class CreateAssetRequest(BaseModel):
+    key: str
+    asset_name: str
+    unit_name: str
+    total: int
+    decimals: int
+    default_frozen: bool = False
+    url: str = None
+    metadata_hash: str = None
+
+
+
 app = FastAPI()
 
 VAULT_ADDR = os.getenv("VAULT_ADDR", "https://hcv.goplausible.xyz")
-VAULT_TOKEN = "hvs.CAESILy7TZ5io0-A2goc9nFpq8eT1hTWtj6tBRh2J1s4-VYvGh4KHGh2cy5qbHRwZHhiRXJkclFlZ25OaXVrR1FmREI"
+VAULT_TOKEN = os.getenv("VAULT_TOKEN")
+ALGOD_URL = os.getenv("ALGOD_URL")
+ALGOD_TOKEN = os.getenv("ALGOD_TOKEN")
+
 
 @app.post("/create/")
 def create_wallet(req: CreateRequest):
@@ -50,4 +69,50 @@ def create_wallet(req: CreateRequest):
         "key": path,
         "address": address,
         "status": "created"
+    }
+
+
+
+@app.post("/create-asset/")
+def create_asset(req: CreateAssetRequest):
+    # 1. Fetch mnemonic from cubbyhole
+    vault_url = f"{VAULT_ADDR}/v1/cubbyhole/{req.key}"
+    resp = requests.get(vault_url, headers={"X-Vault-Token": VAULT_TOKEN})
+    if resp.status_code != 200:
+        raise HTTPException(status_code=404, detail="Mnemonic not found in Vault.")
+    mnem = resp.json().get("mnemonic")
+    if not mnem:
+        raise HTTPException(status_code=500, detail="Invalid mnemonic data.")
+
+    # 2. Derive keys
+    private_key = mnemonic.to_private_key(mnem)
+    public_address = mnemonic.to_public_key(mnem)
+
+    # 3. Initialize Algod client and get transaction params
+    algod_client = algod.AlgodClient(ALGOD_TOKEN, ALGOD_URL)
+    sp = algod_client.suggested_params()
+
+    # 4. Build AssetConfigTxn
+    txn = AssetConfigTxn(
+        sender=public_address,
+        sp=sp,
+        total=req.total,
+        default_frozen=req.default_frozen,
+        unit_name=req.unit_name,
+        asset_name=req.asset_name,
+        manager=public_address,
+        reserve=public_address,
+        freeze=public_address,
+        clawback=public_address,
+        url=req.url,
+        metadata_hash=req.metadata_hash.encode() if req.metadata_hash else None,
+        decimals=req.decimals
+    )
+
+    # 5. Sign transaction
+    signed_txn = txn.sign(private_key)
+
+    # 6. Return signed transaction
+    return {
+        "signed_txn": signed_txn.dictify()
     }
