@@ -1,5 +1,17 @@
 # FastAPI Hashi API ENDPOINTS
 
+
+## Setup
+Install Requirements and Update the .env file rename the .env-example to .env and add the 
+
+```bash
+ALGOD_URL=https://testnet-api.algonode.cloud
+ALGOD_TOKEN=
+VAULT_TOKEN = 
+
+```
+
+
 ## HOW TO RUN
 ```bash
 uvicorn sad:app --reload
