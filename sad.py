@@ -6,6 +6,15 @@ import os
 from algosdk.transaction import AssetConfigTxn, AssetCreateTxn
 from algosdk.v2client import algod
 from dotenv import load_dotenv
+import logging
+import base64
+import msgpack
+from fastapi.encoders import jsonable_encoder
+
+logging.basicConfig(
+    level=logging.DEBUG,  # or logging.INFO to reduce verbosity
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
 load_dotenv()  # Loads .env file into environment
 
 class CreateRequest(BaseModel):
@@ -28,7 +37,7 @@ app = FastAPI()
 VAULT_ADDR = os.getenv("VAULT_ADDR", "https://hcv.goplausible.xyz")
 VAULT_TOKEN = os.getenv("VAULT_TOKEN")
 ALGOD_URL = os.getenv("ALGOD_URL")
-ALGOD_TOKEN = os.getenv("ALGOD_TOKEN")
+ALGOD_TOKEN = ""
 
 
 @app.post("/create/")
@@ -80,13 +89,15 @@ def create_asset(req: CreateAssetRequest):
     resp = requests.get(vault_url, headers={"X-Vault-Token": VAULT_TOKEN})
     if resp.status_code != 200:
         raise HTTPException(status_code=404, detail="Mnemonic not found in Vault.")
-    mnem = resp.json().get("mnemonic")
+    logging.debug("Vault response status: %s, body: %s", resp.status_code, resp.text)
+
+    mnem = resp.json()['data']['mnemonic']
     if not mnem:
-        raise HTTPException(status_code=500, detail="Invalid mnemonic data.")
+        raise HTTPException(status_code=500, detail=f"Invalid mnemonic data.")
 
     # 2. Derive keys
     private_key = mnemonic.to_private_key(mnem)
-    public_address = mnemonic.to_public_key(mnem)
+    public_address = account.address_from_private_key(private_key)
 
     # 3. Initialize Algod client and get transaction params
     algod_client = algod.AlgodClient(ALGOD_TOKEN, ALGOD_URL)
@@ -111,8 +122,13 @@ def create_asset(req: CreateAssetRequest):
 
     # 5. Sign transaction
     signed_txn = txn.sign(private_key)
-
-    # 6. Return signed transaction
-    return {
-        "signed_txn": signed_txn.dictify()
+    data = {
+        "sig": signed_txn.signature,                     # this is 'bytes'
+        "txn": signed_txn.transaction.dictify()          # JSON-serializable
     }
+
+    json_compatible = jsonable_encoder(data, custom_encoder={
+        bytes: lambda v: base64.b64encode(v).decode("utf-8")
+    })
+    # 6. Return signed transaction
+    return json_compatible
