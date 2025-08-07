@@ -3,13 +3,14 @@ from pydantic import BaseModel
 from algosdk import account, mnemonic
 import requests
 import os
-from algosdk.transaction import AssetConfigTxn, AssetCreateTxn
+from algosdk.transaction import AssetConfigTxn, AssetCreateTxn , PaymentTxn
 from algosdk.v2client import algod
 from dotenv import load_dotenv
 import logging
 import base64
 import msgpack
 from fastapi.encoders import jsonable_encoder
+from algosdk.v2client.algod import AlgodClient
 
 logging.basicConfig(
     level=logging.DEBUG,  # or logging.INFO to reduce verbosity
@@ -30,7 +31,10 @@ class CreateAssetRequest(BaseModel):
     url: str = None
     metadata_hash: str = None
 
-
+class PaymentRequest(BaseModel):
+    key: str
+    receiver: str
+    amount: int
 
 app = FastAPI()
 
@@ -38,6 +42,7 @@ VAULT_ADDR = os.getenv("VAULT_ADDR", "https://hcv.goplausible.xyz")
 VAULT_TOKEN = os.getenv("VAULT_TOKEN")
 ALGOD_URL = os.getenv("ALGOD_URL")
 ALGOD_TOKEN = ""
+algod_client = AlgodClient(ALGOD_TOKEN, ALGOD_URL)
 
 
 @app.post("/create/")
@@ -132,3 +137,32 @@ def create_asset(req: CreateAssetRequest):
     })
     # 6. Return signed transaction
     return json_compatible
+
+@app.post("/payment/")
+def payment_txn(req: PaymentRequest):
+    # 1. Retrieve mnemonic securely from Vault's cubbyhole using the user-provided key
+    vault_url = f"{VAULT_ADDR}/v1/cubbyhole/{req.key}"
+    resp = requests.get(vault_url, headers={"X-Vault-Token": VAULT_TOKEN})
+    if resp.status_code != 200:
+        raise HTTPException(status_code=404, detail="Mnemonic not found in Vault.")
+    mnem = resp.json().get("data", {}).get("mnemonic")
+    if not mnem:
+        raise HTTPException(status_code=500, detail="Invalid mnemonic data.")
+
+    # 2. Derive Algorand keys
+    private_key = mnemonic.to_private_key(mnem)
+    sender_addr = account.address_from_private_key(private_key)
+
+    # 3. Build a payment transaction
+    sp = algod_client.suggested_params()
+    txn = PaymentTxn(sender=sender_addr, sp=sp, receiver=req.receiver, amt=req.amount)
+
+    # 4. Sign the transaction
+    signed_txn = txn.sign(private_key)
+
+    # 5. Construct response dict with safe serialization
+    data = {
+        "sig": signed_txn.signature,                 # raw bytes
+        "txn": signed_txn.transaction.dictify()     # JSON-ready dict
+    }
+    return jsonable_encoder(data, custom_encoder={bytes: lambda v: base64.b64encode(v).decode("utf-8")})
