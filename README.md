@@ -1,3 +1,13 @@
+# FastAPI Hashi API ENDPOINTS
+
+## HOW TO RUN
+```bash
+uvicorn sad:app --reload
+```
+DISCLAIMER: USE IT PROPERLY DONT SHOW THESE FAST API REQUEST IN THE BACKEND IT MIGHT CAUSE AN IDOR VUlNERABILITY
+
+
+
 ### Create wallet 
 ```bash
 curl -X POST "http://127.0.0.1:8000/create/" -H "Content-Type: application/json" -d "{\"key\": \"sad\"}"
